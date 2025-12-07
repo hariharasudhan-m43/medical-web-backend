@@ -29,7 +29,7 @@ app.use(
   cors({
     origin: [
       "http://localhost:3000",
-      "https://medical-web-frontend.vercel.app" 
+      "https://medical-web-frontend-daue0sm5q-haris-projects-1fc0cdbe.vercel.app" 
     ],
     credentials: true,
   })
