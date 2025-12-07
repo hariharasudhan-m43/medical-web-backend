@@ -19,31 +19,41 @@ import appointmentRoutes from "./routes/appointments.js";
 import chatbotRoutes from "./routes/chatbot.js";
 import healthRoutes from "./routes/health.js";
 import messageRoutes from "./routes/messages.js";
-
 import { setIO } from "./socketServer.js";
-
-// Models
 import Message from "./models/Message.js";
 
 const app = express();
 
+// CORS FIX — ALLOW PRODUCTION + LOCALHOST
 app.use(
   cors({
-    origin: ["http://localhost:3000"],
+    origin: [
+      "http://localhost:3000",
+      process.env.FRONTEND_URL
+    ],
     credentials: true,
   })
 );
 
 app.use(express.json({ limit: "2mb" }));
 
-try {
-  await connectDB(process.env.MONGO_URI);
-  console.log("✓ MongoDB connected");
-} catch (err) {
-  console.error("✗ MongoDB Error:", err);
-  process.exit(1);
-}
+// CONNECT DATABASE BEFORE STARTING
+(async () => {
+  try {
+    await connectDB(process.env.MONGO_URI);
+    console.log("✓ MongoDB connected");
+  } catch (err) {
+    console.error("✗ MongoDB Error:", err);
+    process.exit(1);
+  }
+})();
 
+// HEALTH CHECK FOR RAILWAY
+app.get("/", (req, res) => {
+  res.send("Backend running");
+});
+
+// ROUTES
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/patients", patientRoutes);
@@ -59,17 +69,18 @@ app.use((req, res) => {
 
 app.use((err, req, res, next) => {
   console.error("🔥 SERVER ERROR:", err);
-  res.status(500).json({
-    message: "Internal Server Error",
-    error: err.message,
-  });
+  res.status(500).json({ message: "Internal Server Error" });
 });
 
+// SOCKET SERVER
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000"],
+    origin: [
+      "http://localhost:3000",
+      process.env.FRONTEND_URL
+    ],
     methods: ["GET", "POST"],
   },
 });
@@ -82,6 +93,7 @@ io.use((socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error("No token"));
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     socket.user = { id: decoded.id, role: decoded.role };
     next();
@@ -92,24 +104,21 @@ io.use((socket, next) => {
 
 io.on("connection", (socket) => {
   const userId = socket.user.id;
+
   if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
   onlineUsers.get(userId).add(socket.id);
 
   socket.join(`user:${userId}`);
 
-  socket.on("joinConversation", (convId) => {
-    socket.join(`conversation:${convId}`);
-  });
+  socket.on("joinConversation", (cid) => socket.join(`conversation:${cid}`));
+  socket.on("leaveConversation", (cid) => socket.leave(`conversation:${cid}`));
 
-  socket.on("leaveConversation", (convId) => {
-    socket.leave(`conversation:${convId}`);
-  });
-
-  // PRIVATE MESSAGE via socket
   socket.on("privateMessage", async ({ to, text }) => {
     if (!to || !text) return;
+
     const from = userId;
     const convId = [String(from), String(to)].sort().join(":");
+
     try {
       const fromModel = socket.user.role === "Doctor" ? "Doctor" : "Patient";
       const toModel = fromModel === "Doctor" ? "Patient" : "Doctor";
@@ -125,7 +134,6 @@ io.on("connection", (socket) => {
       });
 
       const full = await Message.findById(msg._id).lean();
-
       io.to(`conversation:${convId}`).emit("message", full);
       io.to(`user:${to}`).emit("message:notice", { conversationId: convId, message: full });
     } catch (err) {
@@ -135,14 +143,13 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     const sockets = onlineUsers.get(userId);
-    if (sockets) {
-      sockets.delete(socket.id);
-      if (sockets.size === 0) onlineUsers.delete(userId);
-    }
+    if (!sockets) return;
+
+    sockets.delete(socket.id);
+    if (sockets.size === 0) onlineUsers.delete(userId);
   });
 });
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`🚀 Server running at http://localhost:${PORT}`);
-});
+server.listen(PORT, () => console.log(`🚀 Server running on :${PORT}`));
+
